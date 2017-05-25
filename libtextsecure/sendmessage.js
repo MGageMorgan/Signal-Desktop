@@ -258,8 +258,10 @@ MessageSender.prototype = {
         return this.server.getProfile(number).then(function(profile) {
             var identityKey = dcodeIO.ByteBuffer.wrap(profile.identityKey).toArrayBuffer();
 
-            return textsecure.storage.protocol.isTrusted(number, identityKey).then(function(trusted) {
-
+            return textsecure.storage.protocol.saveIdentity(number, identityKey).then(function(changed) {
+                if (changed) {
+                    return textsecure.storage.protocol.removeAllSessions(number);
+                }
             });
         });
     },
