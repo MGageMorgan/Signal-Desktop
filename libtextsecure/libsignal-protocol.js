@@ -35762,6 +35762,17 @@ Internal.SessionRecord = function() {
                 delete sessions[util.toString(oldestBaseKey)];
             }
         },
+        removePreviousSessions: function() {
+            var sessions = this.sessions;
+            for (var key in sessions) {
+                if (sessions[key].indexInfo.closed === -1) {
+                    var newSessions = {};
+                    newSessions[key] = sessions[key];
+                    this.sessions = newSessions;
+                    return;
+                }
+            }
+        },
     };
 
     return SessionRecord;
@@ -35813,7 +35824,7 @@ SessionBuilder.prototype = {
   processPreKey: function(device) {
     return Internal.SessionLock.queueJobForNumber(this.remoteAddress.toString(), function() {
       return this.storage.isTrustedIdentity(
-          this.remoteAddress.getName(), device.identityKey
+          this.remoteAddress.getName(), device.identityKey, this.storage.Direction.SENDING
       ).then(function(trusted) {
         if (!trusted) {
           throw new Error('Identity key changed');
@@ -35857,7 +35868,11 @@ SessionBuilder.prototype = {
           record.updateSessionState(session);
           return Promise.all([
             this.storage.storeSession(address, record.serialize()),
-            this.storage.saveIdentity(this.remoteAddress.getName(), session.indexInfo.remoteIdentityKey)
+            this.storage.saveIdentity(this.remoteAddress.getName(), session.indexInfo.remoteIdentityKey).then(function(changed) {
+              if (changed) {
+                return record.removePreviousSessions();
+              }
+            }.bind(this))
           ]);
         }.bind(this));
       }.bind(this));
@@ -35866,7 +35881,7 @@ SessionBuilder.prototype = {
   processV3: function(record, message) {
     var preKeyPair, signedPreKeyPair, session;
     return this.storage.isTrustedIdentity(
-        this.remoteAddress.getName(), message.identityKey.toArrayBuffer()
+        this.remoteAddress.getName(), message.identityKey.toArrayBuffer(), this.storage.Direction.RECEIVING
     ).then(function(trusted) {
         if (!trusted) {
             var e = new Error('Unknown identity key');
@@ -35914,7 +35929,11 @@ SessionBuilder.prototype = {
             // end of decryptWhisperMessage ... to ensure that the sender
             // actually holds the private keys for all reported pubkeys
             record.updateSessionState(new_session);
-            return this.storage.saveIdentity(this.remoteAddress.getName(), message.identityKey.toArrayBuffer()).then(function() {
+            return this.storage.saveIdentity(this.remoteAddress.getName(), message.identityKey.toArrayBuffer()).then(function(changed) {
+              if (changed) {
+                return record.removePreviousSessions();
+              }
+            }).then(function() {
               return message.preKeyId;
             });
         }.bind(this));
@@ -36110,10 +36129,24 @@ SessionCipher.prototype = {
                   result.set(new Uint8Array(encodedMsg), 1);
                   result.set(new Uint8Array(mac, 0, 8), encodedMsg.byteLength + 1);
 
-                  record.updateSessionState(session);
-                  return this.storage.storeSession(address, record.serialize()).then(function() {
-                      return result;
-                  });
+                  return this.storage.isTrustedIdentity(
+                      this.remoteAddress.getName(), util.toArrayBuffer(session.indexInfo.remoteIdentityKey), this.storage.Direction.SENDING
+                  ).then(function(trusted) {
+                      if (!trusted) {
+                          throw new Error('Identity key changed');
+                      }
+                  }).then(function() {
+                      return this.storage.saveIdentity(this.remoteAddress.getName(), session.indexInfo.remoteIdentityKey).then(function(changed) {
+                          if (changed) {
+                              return record.removePreviousSessions();
+                          }
+                      });
+                  }.bind(this)).then(function() {
+                      record.updateSessionState(session);
+                      return this.storage.storeSession(address, record.serialize()).then(function() {
+                          return result;
+                      });
+                  }.bind(this));
               }.bind(this));
           }.bind(this));
       }.bind(this)).then(function(message) {
@@ -36181,10 +36214,25 @@ SessionCipher.prototype = {
                       record.archiveCurrentState();
                       record.promoteState(result.session);
                     }
-                    record.updateSessionState(result.session);
-                    return this.storage.storeSession(address, record.serialize()).then(function() {
-                        return result.plaintext;
-                    });
+
+                    return this.storage.isTrustedIdentity(
+                        this.remoteAddress.getName(), util.toArrayBuffer(result.session.indexInfo.remoteIdentityKey), this.storage.Direction.SENDING
+                    ).then(function(trusted) {
+                        if (!trusted) {
+                            throw new Error('Identity key changed');
+                        }
+                    }).then(function() {
+                        return this.storage.saveIdentity(this.remoteAddress.getName(), result.session.indexInfo.remoteIdentityKey).then(function(changed) {
+                            if (changed) {
+                                return record.removePreviousSessions();
+                            }
+                        });
+                    }.bind(this)).then(function() {
+                        record.updateSessionState(result.session);
+                        return this.storage.storeSession(address, record.serialize()).then(function() {
+                            return result.plaintext;
+                        });
+                    }.bind(this));
                 }.bind(this));
             }.bind(this));
         }.bind(this));
@@ -36209,6 +36257,7 @@ SessionCipher.prototype = {
                   );
               }
               var builder = new SessionBuilder(this.storage, this.remoteAddress);
+              // isTrustedIdentity is called within processV3, no need to call it here
               return builder.processV3(record, preKeyProto).then(function(preKeyId) {
                   var session = record.getSessionByBaseKey(preKeyProto.baseKey);
                   return this.doDecryptWhisperMessage(
