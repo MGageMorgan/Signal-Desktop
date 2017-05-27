@@ -318,6 +318,31 @@
         }
     },
 
+    getProfiles: function() {
+        // request all conversation members' keys
+        var ids = [];
+        if (this.model.isPrivate()) {
+            ids = [this.model.id];
+        } else {
+            ids = this.model.get('members');
+        }
+        ids.forEach(this.getProfile);
+    },
+
+    getProfile: function(id) {
+        return textsecure.messaging.getProfile(id).then(function(profile) {
+            var identityKey = dcodeIO.ByteBuffer.wrap(profile.identityKey).toArrayBuffer();
+
+            return textsecure.storage.protocol.saveIdentity(
+              number, identityKey, storage.get('safety-numbers-approval', true), false
+            ).then(function(changed) {
+                if (changed) {
+                    return textsecure.storage.protocol.removeAllSessions(number);
+                }
+            });
+        });
+    },
+
     fetchMessages: function() {
         if (!this.id) { return false; }
         return this.messageCollection.fetchConversation(this.id, null, this.get('unreadCount'));

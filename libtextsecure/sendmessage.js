@@ -255,15 +255,7 @@ MessageSender.prototype = {
     },
 
     getProfile: function(number) {
-        return this.server.getProfile(number).then(function(profile) {
-            var identityKey = dcodeIO.ByteBuffer.wrap(profile.identityKey).toArrayBuffer();
-
-            return textsecure.storage.protocol.saveIdentity(number, identityKey).then(function(changed) {
-                if (changed) {
-                    return textsecure.storage.protocol.removeAllSessions(number);
-                }
-            });
-        });
+        return this.server.getProfile(number);
     },
 
     sendRequestGroupSyncMessage: function() {
